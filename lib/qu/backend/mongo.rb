@@ -22,17 +22,13 @@ module Qu
       def connection
         @connection ||= begin
           host_uri = (ENV['MONGOHQ_URL'] || ENV['MONGOLAB_URI']).to_s
-          uri = URI.parse(host_uri)
-          database = uri.path.empty? ? 'qu' : uri.path[1..-1]
-          options = {}
-          if uri.password
-            options[:auths] = [{
-              'db_name'  => database,
-              'username' => uri.user,
-              'password' => uri.password
-            }]
+          if host_uri && !host_uri.empty?
+            uri = URI.parse(host_uri)
+            database = uri.path.empty? ? 'qu' : uri.path[1..-1]
+            ::Mongo::MongoClient.from_uri(host_uri).db(database)
+          else
+            ::Mongo::MongoClient.new.db('qu')
           end
-          ::Mongo::Connection.new(uri.host, uri.port, options).db(database)
         end
       end
       alias_method :database, :connection
@@ -56,8 +52,8 @@ module Qu
       end
 
       def enqueue(payload)
-        payload.id = BSON::ObjectId.new
-        jobs(payload.queue).insert({:_id => payload.id, :klass => payload.klass.to_s, :args => payload.args})
+        payload.id = id_for_payload(payload)
+        jobs(payload.queue).insert(payload_attributes(payload))
         self[:queues].update({:name => payload.queue}, {:name => payload.queue}, :upsert => true)
         logger.debug { "Enqueued job #{payload}" }
         payload
@@ -69,7 +65,7 @@ module Qu
             logger.debug { "Reserving job in queue #{queue}" }
 
             begin
-              if doc = jobs(queue).find_and_modify(:remove => true)
+              if doc = reserve_from_queue(queue)
                 doc['id'] = doc.delete('_id')
                 return Payload.new(doc)
               end
@@ -87,11 +83,11 @@ module Qu
       end
 
       def release(payload)
-        jobs(payload.queue).insert({:_id => payload.id, :klass => payload.klass.to_s, :args => payload.args})
+        jobs(payload.queue).insert(payload_attributes(payload))
       end
 
       def failed(payload, error)
-        jobs('failed').insert(:_id => payload.id, :klass => payload.klass.to_s, :args => payload.args, :queue => payload.queue)
+        jobs('failed').insert(payload_attributes(payload).merge(:queue => payload.queue))
       end
 
       def completed(payload)
@@ -116,6 +112,19 @@ module Qu
       def clear_workers
         logger.info "Clearing workers"
         self[:workers].drop
+      end
+
+    protected
+      def payload_attributes(payload)
+        {:_id => payload.id, :klass => payload.klass.to_s, :args => payload.args}
+      end
+
+      def id_for_payload(payload)
+        BSON::ObjectId.new
+      end
+
+      def reserve_from_queue(queue)
+        jobs(queue).find_and_modify(:remove => true)
       end
 
     private
