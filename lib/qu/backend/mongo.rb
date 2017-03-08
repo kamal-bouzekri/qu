@@ -22,8 +22,9 @@ module Qu
       def connection
         @connection ||= begin
           host_uri = (ENV['MONGOHQ_URL'] || ENV['MONGOLAB_URI']).to_s
-          host_uri = host_uri.split(",")[0]
           if host_uri && !host_uri.empty?
+            host_uri = host_uri.split(",")
+            host_uri = host_uri[0].split("@")[0] + "@" + host_uri[1]
             uri = URI.parse(host_uri)
             database = uri.path.empty? ? 'qu' : uri.path[1..-1]
             ::Mongo::MongoClient.from_uri(host_uri).db(database)
